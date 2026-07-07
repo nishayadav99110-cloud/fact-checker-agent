@@ -4,60 +4,57 @@ import json
 from openai import OpenAI
 import requests
 
-# App configuration
 st.set_page_config(page_title="Fact-Check Agent", page_icon="🕵️‍♂️", layout="wide")
 st.title("🕵️‍♂️ The Fact-Check Agent")
-st.subheader("Your AI Truth Layer for Marketing Content") [cite: 7, 9]
+st.subheader("Automated Truth Layer for PDF Verification")
 
-# Sidebar for API Keys
 with st.sidebar:
-    st.header("Configuration")
-    openai_key = st.text_input("OpenAI API Key", type="password")
-    serper_key = st.text_input("Serper (Google Search) API Key", type="password")
-    st.caption("Get a Serper key from serper.dev to query live web data.") [cite: 9, 13]
+    st.header("🔑 API Credentials")
+    openai_key = st.text_input("OpenAI API Key", type="password", help="Enter your OpenAI API key (sk-...)")
+    serper_key = st.text_input("Serper API Key", type="password", help="Enter your serper.dev API key for live web search")
+    st.markdown("---")
+    st.markdown("### How to use:")
+    st.markdown("1. Enter your API keys above.\n2. Upload a PDF document.\n3. The agent will extract, verify, and flag claims.")
 
 def extract_text_from_pdf(pdf_file):
-    """Extracts raw text from an uploaded PDF file.""" [cite: 12]
     reader = pypdf.PdfReader(pdf_file)
     extracted_text = ""
     for page in reader.pages:
-        extracted_text += page.extract_text() + "\n"
+        text = page.extract_text()
+        if text:
+            extracted_text += text + "\n"
     return extracted_text
 
 def extract_claims_with_llm(client, text):
-    """Uses LLM to identify specific stats, dates, and figures to verify.""" [cite: 12]
     prompt = f"""
-    Analyze the following marketing text and extract the top 3-5 most specific verifiable claims 
-    (such as percentages, dates, market sizes, or concrete financial/technical statistics).
+    Analyze the following text and extract 3 to 5 core specific verifiable claims (such as statistics, dates, market shares, or technical figures).
+    Return ONLY a valid JSON array of strings containing the distinct claims. Do not include markdown or text wrapping.
     
-    Return ONLY a valid JSON array of strings containing the distinct claims. Do not include markdown formatting.
-    Example output format:
-    ["Global AI market will reach $1.3 trillion by 2030", "Company X grew by 45% in Q2 2025"]
+    Example Output:
+    ["Global smartphone adoption reached 85% in 2024", "The company reported a 40% decline in revenue"]
 
-    Text to analyze:
+    Text:
     {text}
     """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0
-    )
     try:
-        claims = json.loads(response.choices[0].message.content.strip().replace("```json", "").replace("```", ""))
-        return claims
-    except Exception:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        content = response.choices[0].message.content.strip()
+        content = content.replace("```json", "").replace("```", "").strip()
+        return json.loads(content)
+    except Exception as e:
+        st.error(f"Error parsing claims: {e}")
         return []
 
 def search_live_web(query, serper_api_key):
-    """Searches the live web using Serper API for the given claim.""" [cite: 13]
     url = "https://google.serper.dev/search"
     payload = json.dumps({"q": query})
-    headers = {
-        'X-API-KEY': serper_api_key,
-        'Content-Type': 'application/json'
-    }
+    headers = {'X-API-KEY': serper_api_key, 'Content-Type': 'application/json'}
     try:
-        response = requests.post(url, headers=headers, data=payload)
+        response = requests.post(url, headers=headers, data=payload, timeout=10)
         results = response.json()
         snippets = [item.get('snippet', '') for item in results.get('organic', [])[:3]]
         return " | ".join(snippets)
@@ -65,70 +62,65 @@ def search_live_web(query, serper_api_key):
         return "No real-time search results found."
 
 def verify_claim_with_context(client, claim, search_results):
-    """Cross-references the claim against the live web context.""" [cite: 9, 13]
     prompt = f"""
-    You are an expert fact-checker. Cross-reference the claimed statistic with the provided live web search context. [cite: 7, 9, 13]
+    You are an expert fact-checker evaluating claims against real-time web search contexts.
     
     Claim to evaluate: "{claim}"
     Live Web Context: "{search_results}"
     
     Categorize the claim into exactly one of these labels:
-    - VERIFIED: If the live web data closely matches or supports the claim. [cite: 14]
-    - INACCURATE: If the statistic is outdated, slightly incorrect, or misquoted. [cite: 14]
-    - FALSE: If the live web search directly refutes the claim or if absolutely no supporting evidence exists. [cite: 14]
+    - VERIFIED: If the live web data closely matches or supports the claim.
+    - INACCURATE: If the statistic is outdated, misquoted, or partially wrong.
+    - FALSE: If the live web data completely contradicts the claim or no evidence supports it.
     
     Provide your output strictly in the following JSON format:
     {{
         "status": "VERIFIED or INACCURATE or FALSE",
-        "explanation": "A short sentence explaining why, including the correct 'real' facts found on the web." 
+        "explanation": "A short, concise sentence explaining why, providing the actual true fact/stat found on the web."
     }}
     """
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0,
-        response_format={"type": "json_object"}
-    )
-    return json.loads(response.choices[0].message.content)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            response_format={"type": "json_object"}
+        )
+        return json.loads(response.choices[0].message.content)
+    except Exception:
+        return {"status": "FALSE", "explanation": "Failed to generate evaluation format."}
 
-# Main Application Flow
 if not openai_key or not serper_key:
-    st.warning("⚠️ Please provide both your OpenAI and Serper API keys in the sidebar to start fact-checking.")
+    st.info("💡 To start, please input your OpenAI and Serper API keys in the sidebar menu.")
 else:
     client = OpenAI(api_key=openai_key)
-    uploaded_file = st.file_file("Upload marketing or analytics PDF", type=["pdf"]) [cite: 11, 15]
+    uploaded_file = st.file_uploader("Upload your document (PDF format)", type=["pdf"])
 
     if uploaded_file is not None:
-        with st.spinner("Processing document..."):
-            # 1. Extract Text
-            raw_text = extract_text_from_pdf(uploaded_file) [cite: 12]
-            
-            # 2. Extract Claims
-            claims_to_check = extract_claims_with_llm(client, raw_text) [cite: 12]
-            
-        if not claims_to_check:
-            st.error("Could not confidently isolate discrete data points or claims from this document. Try a different file.")
+        with st.spinner("Extracting text and isolating claims..."):
+            raw_text = extract_text_from_pdf(uploaded_file)
+            claims = extract_claims_with_llm(client, raw_text)
+
+        if not claims:
+            st.warning("No clear statistical or data claims could be extracted from this PDF.")
         else:
-            st.success(f"Isolated {len(claims_to_check)} core claims for live verification!") [cite: 13]
+            st.success(f"Successfully extracted {len(claims)} key claims for verification!")
             st.write("---")
-            
-            # 3. Verify and Report Layout
-            for i, claim in enumerate(claims_to_check, start=1):
-                with st.status(f"Verifying Claim {i}: '{claim}'...", expanded=True):
-                    # Fetch search engine context
-                    search_context = search_live_web(claim, serper_key) [cite: 13]
-                    # Run valuation LLM prompt
-                    evaluation = verify_claim_with_context(client, claim, search_context)
-                    
-                    status = evaluation.get("status", "FALSE") [cite: 14]
-                    explanation = evaluation.get("explanation", "No explanation compiled.") [cite: 20]
-                    
-                    # Display metrics visually to catch the evaluator's eye
-                    if status == "VERIFIED":
-                        st.markdown(f"**Status:** ✅ :green[{status}]") [cite: 14]
-                    elif status == "INACCURATE":
-                        st.markdown(f"**Status:** ⚠️ :orange[{status}]") [cite: 14]
-                    else:
-                        st.markdown(f"**Status:** ❌ :red[{status}]") [cite: 14]
+
+            for i, claim in enumerate(claims, start=1):
+                with st.expander(f"📋 Claim {i}: {claim}", expanded=True):
+                    with st.spinner("Searching the live web & checking accuracy..."):
+                        search_context = search_live_web(claim, serper_key)
+                        evaluation = verify_claim_with_context(client, claim, search_context)
                         
-                    st.write(f"**Analysis:** {explanation}") [cite: 20]
+                        status = evaluation.get("status", "FALSE")
+                        explanation = evaluation.get("explanation", "")
+
+                        if status == "VERIFIED":
+                            st.markdown(f"**Status:** ✅ :green[{status}]")
+                        elif status == "INACCURATE":
+                            st.markdown(f"**Status:** ⚠️ :orange[{status}]")
+                        else:
+                            st.markdown(f"**Status:** ❌ :red[{status}]")
+                        
+                        st.write(f"**Fact-Check Analysis:** {explanation}")
